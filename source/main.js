@@ -193,6 +193,7 @@ const ICON = {
   budgets:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5V12l6 6"/></svg>',
   averages:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 20h16"/><path d="M7 16v-5M12 16V7M17 16v-8"/></svg>',
   recurring:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8.5"/><path d="M20 4v4.5h-4.5"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 15.5"/><path d="M4 20v-4.5h4.5"/></svg>',
+  search:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>',
   plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>'
 };
 
@@ -203,15 +204,16 @@ function paint(){
   const app=$("#app"), focusId=document.activeElement&&document.activeElement.id;
   const v=ui.view;
   app.innerHTML = v==="history"?historyHTML() : v==="earned"?earnedHTML() : v==="saved"?savedHTML()
-    : v==="budgets"?budgetsHTML() : v==="averages"?averagesHTML() : v==="recurring"?recurringHTML() : homeHTML();
+    : v==="search"?searchHTML() : v==="budgets"?budgetsHTML() : v==="averages"?averagesHTML() : v==="recurring"?recurringHTML() : homeHTML();
   paintTabs();
   if(ui.catAdd){ const i=$("#cat-new"); if(i&&focusId!=="cat-new") i.focus(); }
+  if(v==="search"&&(ui.focusQ||focusId==="q")){ ui.focusQ=false; const i=$("#q"); if(i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } }
   if(ui.catEdit){ const i=$("#cat-rename"); if(i&&document.activeElement!==i){ i.focus(); i.setSelectionRange(i.value.length,i.value.length); } }
 }
 function paintTabs(){
   const t=$("#tabs"); if(!user){ t.hidden=true; return; }
   t.hidden=false;
-  const tab=({history:ui.filter&&ui.filter.back==="budgets"?"budgets":"home",earned:"home",saved:"home"})[ui.view]||ui.view;
+  const tab=({history:ui.filter&&ui.filter.back==="budgets"?"budgets":"home",earned:"home",saved:"home",search:"home"})[ui.view]||ui.view;
   const b=(k,label)=>`<button class="tab ${tab===k?"on":""}" data-act="tab" data-tab="${k}" ${tab===k?'aria-current="page"':""}>${ICON[k]}<span>${label}</span></button>`;
   t.innerHTML = `<div class="tabs-in">${b("home","Home")}${b("budgets","Budgets")}
     <button class="fab" data-act="add" aria-label="Add">${ICON.plus}</button>
@@ -267,13 +269,14 @@ function homeHTML(){
   const addRow = ui.catAdd ? `<div class="cat"><div class="cat-edit">
       <input type="text" id="cat-new" maxlength="40" placeholder="New category, e.g. Groceries" aria-label="New category name">
       <button class="mini go" data-act="cat-add-save">Add</button><button class="mini" data-act="cat-cancel">Cancel</button></div></div>` : "";
-  return topbar() + periodControls() + `
+  return topbar(`<button class="icon-btn" data-act="go" data-view="search" aria-label="Search purchases">${ICON.search}</button>`) + periodControls() + `
     <div class="total">
       <button class="total-main" data-act="all">
         <div class="k">Spent ${esc(periodNoun(ui.period,ui.anchor))}</div>
         <div class="v">${whole}<small>.${cents}</small></div>
         <div class="meta"><span>${plural(items.length,"purchase")}</span><span>View history →</span></div>
       </button>
+      ${chartHTML(from,to)}
       <div class="stats">
         <button class="stat" data-act="earned"><span class="sk">Earned</span><span class="sv earn">${money(earned)}</span></button>
         <div class="stat"><span class="sk">Net gain</span><span class="sv ${net>0?"pos":net<0?"neg":""}">${signed(net)}</span></div>
@@ -283,6 +286,98 @@ function homeHTML(){
     <div class="list">${addRow}${cats.length? cats.map(c=>catRow(c,max,total)).join("") : (ui.catAdd?"":`<div class="empty">No categories yet. Tap <b>+</b> below to log your first purchase.</div>`)}</div>
     ${footerHTML()}`;
 }
+
+/* ---------- spending line (Robinhood-style) ----------
+   The line is running (spent − earned) across the period: purchases push it up,
+   money earned pulls it down. Red if it ends above where it started, green if below. */
+let chart=null;
+function netSeries(from,to){
+  const ev=[...purchasesIn(from,to).map(p=>({t:+new Date(p.ts),v:+p.amount})),...incomeIn(from,to).map(p=>({t:+new Date(p.ts),v:-p.amount}))].sort((a,b)=>a.t-b.t);
+  const n = ui.period==="day"?24 : ui.period==="week"?28 : ui.period==="month"?daysBetween(from,to) : daysBetween(from,to);
+  const span=to-from, now=Date.now(), pts=[]; let acc=0, j=0;
+  for(let i=0;i<=n;i++){
+    let t=+from+span*i/n; const last = t>=now;
+    if(last) t=Math.max(+from,now);
+    while(j<ev.length && ev[j].t<=t){ acc+=ev[j].v; j++; }
+    pts.push({i:last&&t===now?(now-from)/span*n:i,t,v:acc});
+    if(last) break;
+  }
+  return {pts,n,events:ev.length};
+}
+function chartHTML(from,to){
+  const {pts,n,events}=netSeries(from,to);
+  chart=null;
+  if(!events) return "";
+  const W=320,H=84,pad=6, vs=pts.map(p=>p.v), lo=Math.min(0,...vs), hi=Math.max(0,...vs), rng=(hi-lo)||1;
+  const X=i=>i/n*W, Y=v=>pad+(hi-v)/rng*(H-2*pad);
+  const d=pts.map((p,k)=>(k?"L":"M")+X(p.i).toFixed(1)+" "+Y(p.v).toFixed(1)).join(" ");
+  const endV=pts[pts.length-1].v, tone=endV>0.004?"up":endV<-0.004?"down":"flat";
+  const area=d+` L${X(pts[pts.length-1].i).toFixed(1)} ${Y(0).toFixed(1)} L0 ${Y(0).toFixed(1)} Z`;
+  chart={pts,n,W,H,X,Y,from,to};
+  return `<div class="spark ${tone}">
+    <div class="spark-read"><span class="sk" id="spark-when">Spent − earned</span><span class="sv" id="spark-val">${signed(endV).replace("+","")}</span></div>
+    <svg id="spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Running spending minus earnings for this ${ui.period}">
+      <defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="currentColor" stop-opacity=".28"/><stop offset="1" stop-color="currentColor" stop-opacity="0"/></linearGradient></defs>
+      <line x1="0" x2="${W}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" class="base" vector-effect="non-scaling-stroke"/>
+      <path d="${area}" fill="url(#sg)" stroke="none"/>
+      <path d="${d}" class="ln" fill="none" vector-effect="non-scaling-stroke"/>
+      <line id="spark-x" class="cross" x1="0" x2="0" y1="0" y2="${H}" vector-effect="non-scaling-stroke" visibility="hidden"/>
+      <circle id="spark-dot" r="3.5" cx="${X(pts[pts.length-1].i).toFixed(1)}" cy="${Y(endV).toFixed(1)}"/>
+    </svg></div>`;
+}
+function sparkLabel(p){
+  if(p.i===0) return "At start";
+  if(Math.abs(p.t-Date.now())<60000) return "Now";
+  const d=new Date(p.t);
+  if(ui.period==="day") return "By "+d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
+  if(ui.period==="week") return "By "+d.toLocaleDateString("en-US",{weekday:"short"})+" "+d.toLocaleTimeString("en-US",{hour:"numeric"});
+  return "Through "+fmtMD(new Date(p.t-1)); // daily points sit at midnight, i.e. the end of the previous day
+}
+function sparkMove(e){
+  const svg=$("#spark"); if(!svg||!chart) return;
+  const r=svg.getBoundingClientRect(), fx=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width))*chart.n;
+  let best=chart.pts[0]; for(const p of chart.pts) if(Math.abs(p.i-fx)<Math.abs(best.i-fx)) best=p;
+  const x=chart.X(best.i), y=chart.Y(best.v);
+  $("#spark-dot").setAttribute("cx",x); $("#spark-dot").setAttribute("cy",y);
+  const cx=$("#spark-x"); cx.setAttribute("x1",x); cx.setAttribute("x2",x); cx.setAttribute("visibility","visible");
+  $("#spark-when").textContent=sparkLabel(best); $("#spark-val").textContent=signed(best.v).replace("+","");
+}
+function sparkReset(){
+  if(!chart||!$("#spark")) return; const p=chart.pts[chart.pts.length-1];
+  $("#spark-dot").setAttribute("cx",chart.X(p.i)); $("#spark-dot").setAttribute("cy",chart.Y(p.v));
+  $("#spark-x").setAttribute("visibility","hidden");
+  $("#spark-when").textContent="Spent − earned"; $("#spark-val").textContent=signed(p.v).replace("+","");
+}
+document.addEventListener("pointermove",e=>{ if(e.target.closest&&e.target.closest("#spark")) sparkMove(e); });
+document.addEventListener("pointerdown",e=>{ if(e.target.closest&&e.target.closest("#spark")) sparkMove(e); });
+document.addEventListener("pointerout",e=>{ if(e.target.closest&&e.target.closest("#spark")&&!(e.relatedTarget&&e.relatedTarget.closest&&e.relatedTarget.closest("#spark"))) sparkReset(); });
+document.addEventListener("pointerup",e=>{ if(e.pointerType==="touch") sparkReset(); });
+
+/* ---------- search ---------- */
+ui.q="";
+function searchResults(){
+  const q=ui.q.trim().toLowerCase(); if(!q) return {items:[],q};
+  const toks=q.split(/\s+/);
+  const hay=(p,income)=>[(p.note||""),income?"money earned income":(p.category||""),money(p.amount),String(p.amount),new Date(p.ts).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"}),new Date(p.ts).toLocaleDateString("en-US",{month:"short"}),p.fromRecurring?"recurring":"",p.fromSaved?"saved":""].join(" ").toLowerCase();
+  const items=[...rows("purchases").map(p=>({...p,_inc:false})),...rows("income").map(p=>({...p,_inc:true}))]
+    .filter(p=>{ const h=hay(p,p._inc); return toks.every(t=>h.includes(t)); })
+    .sort((a,b)=>b.ts.localeCompare(a.ts));
+  return {items,q};
+}
+function resultsHTML(){
+  const {items,q}=searchResults();
+  if(!q) return `<div class="list"><div class="empty">Search by name, category, amount, or month — e.g. “chipotle”, “gas”, “12.50”, “august”.</div></div>`;
+  if(!items.length) return `<div class="list"><div class="empty">Nothing matches “${esc(ui.q.trim())}”.</div></div>`;
+  const spent=sum(items.filter(p=>!p._inc)), earned=sum(items.filter(p=>p._inc)), shown=items.slice(0,200);
+  return `<div class="s res-sum">${plural(items.length,"match","matches")}${spent?` · <b>${money(spent)}</b> spent`:""}${earned?` · <b class="earn">${money(earned)}</b> earned`:""} · all time</div>
+    ${grouped(shown,p=>itemRow(p,{income:p._inc}))}${items.length>200?`<p class="note">Showing the newest 200. Add more words to narrow it down.</p>`:""}`;
+}
+function searchHTML(){
+  return topbar()+`${back()}
+    <div class="searchbox">${ICON.search}<input type="search" id="q" placeholder="Search purchases and earnings" value="${esc(ui.q)}" autocomplete="off" aria-label="Search"></div>
+    <div id="results">${resultsHTML()}</div>`;
+}
+document.addEventListener("input",e=>{ if(e.target.id==="q"){ ui.q=e.target.value; $("#results").innerHTML=resultsHTML(); } });
 
 function itemRow(p,{withCat=true,income=false}={}){
   const d=new Date(p.ts), t=d.toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit"});
@@ -332,12 +427,19 @@ function savedHTML(){
 }
 
 /* ---------- budgets ---------- */
+const REPEATS={none:"Doesn't repeat",week:"Weekly",month:"Monthly",year:"Yearly"};
+function budgetWindow(b,offset=0){
+  if(b.repeat&&b.repeat!=="none"){ const r=periodRange(b.repeat,shiftAnchor(b.repeat,today(),offset)); return {from:r.from,end:addDays(r.to,-1),to:r.to}; }
+  const from=parseYmd(b.start), end=parseYmd(b.end); return {from,end,to:addDays(end,1)};
+}
 function budgetInfo(b){
-  const from=parseYmd(b.start), end=parseYmd(b.end), to=addDays(end,1), t=today();
+  const {from,end,to}=budgetWindow(b), t=today();
   const spent=sum(purchasesIn(from,to,b.category||null)), left=b.amount-spent, pct=b.amount>0?spent/b.amount:0;
   const status = t<from?"upcoming" : t>end?"ended" : "active";
   const daysLeft = status==="active" ? daysBetween(t,end)+1 : status==="upcoming" ? daysBetween(from,end)+1 : 0;
-  return {from,end,to,spent,left,pct,status,daysLeft};
+  let prev=null;
+  if(b.repeat&&b.repeat!=="none"){ const w=budgetWindow(b,-1); prev={spent:sum(purchasesIn(w.from,w.to,b.category||null)),label:{week:"Last week",month:"Last month",year:"Last year"}[b.repeat]}; }
+  return {from,end,to,spent,left,pct,status,daysLeft,prev};
 }
 function budgetsHTML(){
   const order={active:0,upcoming:1,ended:2};
@@ -352,11 +454,12 @@ function budgetsHTML(){
     return `<div class="bcard ${b.status}">
       <button class="bmain" data-act="budget-open" data-id="${esc(b.id)}">
         <div class="row"><span class="name">${esc(b.name||b.category||"Budget")}</span><span class="pill ${b.status==="active"||over?st:""}">${pill}</span></div>
-        <div class="sub">${b.name?esc(b.category||"All spending")+" · ":b.category?"":"All spending · "}${esc(fmtRange(b.from,b.end))}</div>
+        <div class="sub">${b.name?esc(b.category||"All spending")+" · ":b.category?"":"All spending · "}${b.repeat&&b.repeat!=="none"?`<span class="rep">${REPEATS[b.repeat]}</span> · `:""}${esc(fmtRange(b.from,b.end))}</div>
         <div class="bnum"><span class="big ${over?"neg":""}">${money(Math.abs(b.left))}</span> ${over?"over":"left"}</div>
         <div class="sub">${money(b.spent)} of ${money(b.amount)} spent</div>
         <div class="track big"><div class="fill ${st}" style="width:${Math.min(100,b.pct*100).toFixed(1)}%"></div></div>
         <div class="sub">${foot}</div>
+        ${b.prev?`<div class="sub prev">${b.prev.label}: ${money(b.prev.spent)} of ${money(b.amount)}${b.prev.spent>b.amount?` <span class="neg">(${money(b.prev.spent-b.amount)} over)</span>`:""}</div>`:""}
       </button>
       <div class="bfoot">${ui.confirm===b.id?confirmBtns("bdel-yes",b.id)
         :`<button class="mini" data-act="bedit" data-id="${esc(b.id)}">Edit</button><button class="mini del" data-act="bdel" data-id="${esc(b.id)}" aria-label="Delete budget">✕</button>`}</div>
@@ -525,30 +628,36 @@ function openBudgetSheet(id){
   const src=id?state.budgets[id]:null; if(id&&!src) return;
   const t=today();
   const f={name:src?.name||"",category:src?.category||"",amount:src?String(src.amount):"",
-    start:src?.start||ymd(new Date(t.getFullYear(),t.getMonth(),1)), end:src?.end||ymd(new Date(t.getFullYear(),t.getMonth()+1,0)),newOpen:false};
-  const orig=JSON.stringify([f.name.trim(),f.category,+f.amount||0,f.start,f.end]);
+    start:src?.start||ymd(new Date(t.getFullYear(),t.getMonth(),1)), end:src?.end||ymd(new Date(t.getFullYear(),t.getMonth()+1,0)),repeat:src?.repeat||"none",newOpen:false};
+  const orig=JSON.stringify([f.name.trim(),f.category,+f.amount||0,f.start,f.end,f.repeat]);
+  const resets={week:"Resets every Sunday.",month:"Resets on the 1st of each month.",year:"Resets every January 1."};
   const quick={week:"This week",month:"This month",d30:"Next 30 days",rest:"Rest of year"};
   runSheet(f,{
     draw:()=>`<h3 id="sh-t">${id?"Edit budget":"New budget"}</h3><p class="hint">Purchases in the date range${f.category?" and category":""} count against it.</p>
       ${amountField(f)}
-      <div class="field"><div class="lab">Dates</div>
+      <div class="field"><div class="lab">Repeats</div><div class="seg">${Object.entries(REPEATS).map(([k,l])=>`<button data-sheet="repeat" data-r="${k}" aria-selected="${f.repeat===k}">${k==="none"?"Never":l}</button>`).join("")}</div>
+        ${f.repeat!=="none"?`<p class="hint small">${resets[f.repeat]} Covers the current ${f.repeat} automatically — no dates needed.</p>`:""}</div>
+      ${f.repeat==="none"?`<div class="field"><div class="lab">Dates</div>
         <div class="chips">${Object.entries(quick).map(([k,l])=>`<button class="chip" data-sheet="quick" data-q="${k}">${l}</button>`).join("")}</div>
-        <div class="daterow"><label>Start<input type="date" id="f-start" value="${f.start}"></label><label>End<input type="date" id="f-end" value="${f.end}"></label></div></div>
+        <div class="daterow"><label>Start<input type="date" id="f-start" value="${f.start}"></label><label>End<input type="date" id="f-end" value="${f.end}"></label></div></div>`:""}
       ${catPicker(f,{allowAll:true})}
-      <div class="field"><label for="f-name">Name (optional)</label><input type="text" id="f-name" maxlength="40" placeholder="e.g. September food" value="${esc(f.name)}"></div>
+      <div class="field"><label for="f-name">Name (optional)</label><input type="text" id="f-name" maxlength="40" placeholder="${f.repeat==="none"?"e.g. Fall break trip":"e.g. Food"}" value="${esc(f.name)}"></div>
       <p class="err" id="f-err"></p>
       <div class="btnrow"><button class="btn" data-sheet="cancel">Cancel</button><button class="btn primary" data-sheet="save">Save budget</button></div>`,
-    read:()=>{ f.amount=$("#f-amt").value; f.name=$("#f-name").value; f.start=$("#f-start").value||f.start; f.end=$("#f-end").value||f.end; },
+    read:()=>{ f.amount=$("#f-amt").value; f.name=$("#f-name").value; f.start=$("#f-start")?.value||f.start; f.end=$("#f-end")?.value||f.end; },
     save:()=>{
       const amt=amt2(f.amount), name=f.name.trim();
-      if(id&&JSON.stringify([name,f.category,amt||0,f.start,f.end])===orig) return true;
+      if(id&&JSON.stringify([name,f.category,amt||0,f.start,f.end,f.repeat])===orig) return true;
       if(!(amt>0)) return err("Enter a budget amount greater than $0.");
-      if(!f.start||!f.end) return err("Pick a start and end date.");
-      if(parseYmd(f.end)<parseYmd(f.start)) return err("The end date is before the start date.");
-      put("budgets",id||uid(),{name,category:f.category||null,amount:amt,start:f.start,end:f.end});
+      if(f.repeat==="none"){
+        if(!f.start||!f.end) return err("Pick a start and end date.");
+        if(parseYmd(f.end)<parseYmd(f.start)) return err("The end date is before the start date.");
+      }
+      put("budgets",id||uid(),{name,category:f.category||null,amount:amt,start:f.start,end:f.end,repeat:f.repeat});
       toast(id?"Budget updated":"Budget created"); return true;
     },
     extra:(a,el,redraw)=>{
+      if(a==="repeat"){ f.repeat=el.dataset.r; return redraw(); }
       if(a!=="quick") return;
       const t=today(), q=el.dataset.q;
       if(q==="week"){ const s=addDays(t,-t.getDay()); f.start=ymd(s); f.end=ymd(addDays(s,6)); }
@@ -621,7 +730,7 @@ let toastT;
 function toast(msg){ $("#toastRoot").innerHTML=`<div class="toast" role="status">${esc(msg)}</div>`; clearTimeout(toastT); toastT=setTimeout(()=>$("#toastRoot").innerHTML="",2400); }
 
 /* ---------- navigation & events ---------- */
-function go(view){ ui.view=view; ui.confirm=null; ui.catEdit=null; ui.catConfirm=null; ui.catAdd=false; if(view!=="history") ui.filter=null; window.scrollTo({top:0}); render(); }
+function go(view){ if(view==="search") ui.focusQ=true; ui.view=view; ui.confirm=null; ui.catEdit=null; ui.catConfirm=null; ui.catAdd=false; if(view!=="history") ui.filter=null; window.scrollTo({top:0}); render(); }
 
 $("#app").addEventListener("keydown", e=>{
   if(e.target.id==="cat-new"){
