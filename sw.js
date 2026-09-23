@@ -1,7 +1,7 @@
 // Ledger service worker: opens instantly and works offline.
 // App files are served from the cache right away and refreshed in the background,
 // so a new version shows up the next time you open the app.
-const VERSION = "ledger-v3";
+const VERSION = "ledger-v2";
 const SHELL = ["./","./index.html","./app.js","./config.js","./manifest.webmanifest",
   "./icons/icon-192.png","./icons/icon-512.png","./icons/apple-touch-icon.png"];
 
