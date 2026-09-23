@@ -1,0 +1,9 @@
+{
+  "name": "ledger-source",
+  "private": true,
+  "scripts": {
+    "build": "esbuild main.js --bundle --minify --format=esm --target=es2020 --outfile=../app.js"
+  },
+  "dependencies": { "firebase": "^12.19.0" },
+  "devDependencies": { "esbuild": "^0.28.2" }
+}
